@@ -1,0 +1,248 @@
+preg = tps92664_regs;
+    p_my_leds = my_leds;
+
+    ret = TPS92664_init(LMM1_handler, (tps92664_st_reg *)&tps92664_regs);
+    if (ret < 0)
+    {
+        /* TPS92664 initialization failed, check the value of ret! */
+       // printf("TPS92664 Init Fail\n");
+    }
+    else
+    {
+        /* TPS92664 initialization OK */
+      //  printf("TPS92664 Init OK\n");
+    } 
+
+    my_tps92664_device.regs = tps92664_regs;
+    
+    TPS92664_communicationReset();
+    
+    //printf("Find TPS92664 Device\n");
+
+    tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN
+    TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+    my_tps92664_device.useACK = true;
+
+
+    for(int x=0; x<64; x++)
+    {
+        int a = x;
+        //printf("TPS92664 device ID : %d\r\n", a);
+        bool dev_id0 = a & 0x01;
+        //printf("dev_id0: %d\r\n", dev_id0);
+        bool dev_id1 = (a & 0x02) >> 1;
+        //printf("dev_id1: %d\r\n", dev_id1);
+        bool dev_id2 = (a & 0x04) >> 2;
+        // printf("dev_id2: %d\r\n", dev_id2);
+        bool dev_id3 = (a & 0x08) >> 3;
+        // printf("dev_id3: %d\r\n", dev_id3);
+        bool dev_id4 = (a & 0x10) >> 4;
+        // printf("dev_id4: %d\r\n", dev_id4);
+        bool dev_id5 = (a & 0x20) >> 5;
+        // printf("dev_id5: %d\r\n", dev_id5);
+        
+        bool p0 = dev_id0^dev_id1^dev_id2^dev_id4;
+
+        bool p1 = !(dev_id1^dev_id3^dev_id4^dev_id5);
+
+        uint8_t devid = a +(p1<<7)+(p0<<6);
+         
+        my_tps92664_device.device_id = devid;
+        //printf("TPS92664 device DEVID Byte : %d\r\n", my_tps92664_device.device_id);
+        ret = TPS92664_SingleDeviceRead(LMM1_handler, &LMM1_handler->regs[TPS_SYSCFG], 1);
+        if (ret < 0)
+        {
+
+          //  printf("devid blank\r\n");
+            TPS92664_communicationReset();
+    
+            tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN && CMWEN
+            TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+            my_tps92664_device.useACK = true;
+        }
+        else
+        {
+         //   printf("TPS92664 TPS_SYSCFG Reg Value: %u\n", my_tps92664_device.regs[TPS_SYSCFG].value);
+            printf("TPS92664 device address : %d\n", my_tps92664_device.device_id);
+        }
+        
+
+    }
+
+    TPS92664_communicationReset();
+
+    tps92664_regs[MTPCFG].value = 0x60;           //Vopalensky
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[MTPCFG],1);  
+    
+
+    my_tps92664_device.device_id = T1_RH_LMM_DEVICE_ID;
+    printf("TPS92664 device address : %d\n", my_tps92664_device.device_id);
+    tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN && CMWEN
+    TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+    my_tps92664_device.useACK = true;
+
+
+
+    tps92664_regs[DEFWIDTH01].value = 0x1A;
+    tps92664_regs[DEFWIDTH02].value = 0x1A;
+    tps92664_regs[DEFWIDTH03].value = 0x1A;
+    tps92664_regs[DEFWIDTH04].value = 0x1A;
+    tps92664_regs[DEFWIDTH05].value = 0xFF;
+    tps92664_regs[DEFWIDTH06].value = 0x00;
+    tps92664_regs[DEFWIDTH07].value = 0x00;
+    tps92664_regs[DEFWIDTH08].value = 0x00;
+    tps92664_regs[DEFWIDTH09].value = 0x00;
+    tps92664_regs[DEFWIDTH10].value = 0x00;
+    tps92664_regs[DEFWIDTH11].value = 0x00;
+    tps92664_regs[DEFWIDTH12].value = 0x00;
+    tps92664_regs[DEFWIDTH13].value = 0x00;
+    tps92664_regs[DEFWIDTH14].value = 0x00;
+    tps92664_regs[DEFWIDTH15].value = 0x00;
+    tps92664_regs[DEFWIDTH16].value = 0x00;
+
+
+    printf("TPS Set default width registers\n");
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[DEFWIDTH01],16);  
+
+    if (ret < 0)
+    {
+        printf("TPS92664_BroadcastWriteRegs FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_BroadcastWriteRegs OK\n");
+    }
+
+    tps92664_regs[LEDONTH01].value = 59;
+    tps92664_regs[LEDONTH02].value = 59;
+    tps92664_regs[LEDONTH03].value = 59;
+    tps92664_regs[LEDONTH04].value = 59;
+    tps92664_regs[LEDONTH05].value = 45;
+    tps92664_regs[LEDONTH06].value = 3;
+    tps92664_regs[LEDONTH07].value = 3;
+    tps92664_regs[LEDONTH08].value = 3;
+    tps92664_regs[LEDONTH09].value = 45;
+    tps92664_regs[LEDONTH10].value = 3;
+    tps92664_regs[LEDONTH11].value = 3;
+    tps92664_regs[LEDONTH12].value = 3;
+    tps92664_regs[LEDONTH13].value = 45;
+    tps92664_regs[LEDONTH14].value = 3;
+    tps92664_regs[LEDONTH15].value = 3;
+    tps92664_regs[LEDONTH16].value = 3;
+
+
+    printf("TPS Set LED ON tresholdsregisters\n");
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[LEDONTH01],16);  
+
+    if (ret < 0)
+    {
+        printf("TPS92664_BroadcastWriteRegs FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_BroadcastWriteRegs OK\n");
+    }
+
+    printf("Setup CMWTAB Watchdog\n");
+    tps92664_regs[TPS_CMWTAP].value = 7;           
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_CMWTAP],1);   
+    if (ret < 0)
+    {
+        printf("Setup CMWTABFAIL\n");
+    }
+    else
+    {
+        printf("Setup CMWTAB OK\n");
+    }
+
+
+
+    printf("Enable Watchdog\n");
+    //tps92664_regs[TPS_SYSCFG].value = int(0b00101000);           //Broadcast set ACKEN && CMWEN
+    //tps92664_regs[TPS_SYSCFG].value = int(0b01101101);           //Broadcast set LEDADCEN && ACKEN && CMWEN && CSEN && CSGAIN
+    tps92664_regs[TPS_SYSCFG].value = int(0b01100101);           //Broadcast set LEDADCEN && ACKEN  && CSEN && CSGAIN
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+    if (ret < 0)
+    {
+        printf("Watchdog FAIL\n");
+    }
+    else
+    {
+        printf("Watchdog OK\n");
+    }
+
+    tps92664_regs[TPS_STATUS].value = int(0b00000001);           //At startup, set bit to 1, then read periodically:
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_STATUS],1);   
+    if (ret < 0)
+    {
+        printf("Status set-up FAIL\n");
+    }
+    else
+    {
+        printf("Status set-up OK\n");
+    }
+
+    ret = TPS92664_Set_CSGain(LMM1_handler, x1_GAIN);
+    if (ret < 0)
+    {
+        printf("TPS92664_Set_CSGain FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_Set_CSGain OK\n");
+    }
+
+    printf("TPS Set PWMTICK\n");
+    tps92664_regs[TPS_PWMTICK].value = 13;  
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_PWMTICK],1);  
+
+    if (ret < 0)
+    {
+        printf("TPS92664_BroadcastWriteRegs FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_BroadcastWriteRegs OK\n");
+    }
+    printf("TPS Set SlewRate\n");
+    ret = TPS92664_Set_SlewRate(LMM1_handler, FASTEST_RATE);
+    if (ret < 0)
+    {
+        printf("TPS92664_Set_SlewRate FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_Set_SlewRates OK\n");
+    }
+
+    printf("TPS92664_SetLeds\n");
+    ret = TPS92664_BroadcastSetLeds(LMM1_handler, p_my_leds, 16);
+
+    if (ret < 0)
+    {
+           printf("TPS92664_BroadcastSetLeds FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_BroadcastSetLeds OK\n");
+    }
+    tps92664_regs[TPS_STATUS].value = 1;  
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_STATUS],1);   
+    if (ret < 0)
+    {
+        printf("Status set-up FAIL\n");
+    }
+    else
+    {
+        printf("Status set-up OK\n");
+    }
+    
+    ret = TPS92664_SingleDeviceWriteRegs(LMM1_handler, &tps92664_regs[TPS_STATUS],1);   
+    if (ret < 0)
+    {
+        printf("Status set-up FAIL\n");
+    }
+    else
+    {
+        printf("Status set-up OK\n");
+    }

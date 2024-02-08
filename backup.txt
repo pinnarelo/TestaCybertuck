@@ -1,0 +1,898 @@
+#include "mbed.h"
+#include "iostream"
+#include "stdio.h"
+#include "string"
+#include "algorithm"
+#include "cstring"
+#include "main.h"
+#include "stdint.h"
+
+#define STOP_TURN_CURRENT 30
+#define TAIL_CURRENT 30
+
+#define BUFF_LEN    32
+#define MSG_LEN     64
+#define DATA_LEN    MSG_LEN - 2
+
+DigitalOut          led2(LED1);
+BufferedSerial      serial(USBTX, USBRX);
+Thread              thread1;
+Thread              thread2;
+Thread              thread3;
+Thread              thread4;
+EventQueue          eventQueue;
+Mutex               mutex;
+ConditionVariable   cond(mutex);
+char                recvBuff[BUFF_LEN] = { 0 };
+size_t              recvLen;
+char                message[MSG_LEN] = { 0 };
+
+// The following variable is protected by locking the mutex
+char                data[DATA_LEN] = { 0 };
+
+
+// Circular buffers for serial TX and RX data - used by interrupt routines
+const int serial_buffer_size = 255;    
+    
+// Circular buffer pointers 
+// volatile makes read-modify-write atomic 
+volatile int serial_rx_in;
+volatile int serial_rx_out;
+    
+// Line buffers for sprintf and sscanf
+char serial_rx_line[40];
+    
+// might need to increase buffer size for high baud rates
+char serial_rx_buffer[serial_buffer_size+1];
+
+int hex2int(char ch);
+void read_line(void);
+void printmenu(void);
+
+
+#include "TPS92664.h"
+#include "TPS92520.h"
+//TPS92520(PinName mosi, PinName miso, PinName sclk, PinName cs, PinName pwr_en);
+TPS92520 LedDriver(PB_15, PB_14, PB_13, PC_4, PB_12);
+DigitalOut CH1_PWM(PA_1);
+DigitalOut CH2_PWM(PA_3);
+
+tps92664_device my_tps92664_device;                      /* A new driver instance */
+tps92664_device *LMM1_handler = &my_tps92664_device; /* A driver handle to pass around */
+
+tps92664_leds my_leds[16];
+tps92664_leds *p_my_leds;
+
+uint8_t LEDsDuty[16] = {100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100};
+int blank_time = 0;
+
+tps92664_st_reg *preg;
+    tps92664_st_reg tps92664_regs[] =
+    {
+        {0x00, 0x00, 0x00, 0xBF, 1}, /* MTPCFG */		
+        {0x01, 0x01, 0x00, 0xFF, 1}, /* OUTCTRL */
+        {0x02, 0x02, 0x00, 0xFF, 1}, /* TWLMT */
+        {0x03, 0x03, 0x00, 0x3F, 1}, /* SLEWL */
+        {0x04, 0x04, 0x00, 0x3F, 1}, /* SLEWH */
+        {0x05, 0x05, 0x00, 0xFF, 1}, /* DWIDTH01 */
+        {0x06, 0x06, 0x00, 0xFF, 1}, /* DWIDTH02 */
+        {0x07, 0x07, 0x00, 0xFF, 1}, /* DWIDTH03 */
+        {0x08, 0x08, 0x00, 0xFF, 1}, /* DWIDTH04 */
+        {0x09, 0x09, 0x00, 0xFF, 1}, /* DWIDTH05 */
+        {0x0A, 0x0A, 0x00, 0xFF, 1}, /* DWIDTH06 */
+        {0x0B, 0x0B, 0x00, 0xFF, 1}, /* DWIDTH07 */
+        {0x0C, 0x0C, 0x00, 0xFF, 1}, /* DWIDTH08 */
+        {0x0D, 0x0D, 0x00, 0xFF, 1}, /* DWIDTH09 */
+        {0x0E, 0x0E, 0x00, 0xFF, 1}, /* DWIDTH10 */
+        {0x0F, 0x0F, 0x00, 0xFF, 1}, /* DWIDTH11 */       
+        {0x10, 0x10, 0x00, 0xFF, 1}, /* DWIDTH12 */   
+        {0x11, 0x11, 0x00, 0xFF, 1}, /* DWIDTH13 */   
+        {0x12, 0x12, 0x00, 0xFF, 1}, /* DWIDTH14 */   
+        {0x13, 0x13, 0x00, 0xFF, 1}, /* DWIDTH15 */   
+        {0x14, 0x14, 0x00, 0xFF, 1}, /* DWIDTH16 */   
+        {0x15, 0x15, 0x00, 0xFF, 1}, /* PHASE01H */   
+        {0x16, 0x16, 0x00, 0xFF, 1}, /* PHASE02H */   
+        {0x17, 0x17, 0x00, 0xFF, 1}, /* PHASE03H */   
+        {0x18, 0x18, 0x00, 0xFF, 1}, /* PHASE04H */   
+        {0x19, 0x19, 0x00, 0xFF, 1}, /* PHASE05H */   
+        {0x1A, 0x1A, 0x00, 0xFF, 1}, /* PHASE06H */   
+        {0x1B, 0x1B, 0x00, 0xFF, 1}, /* PHASE07H */   
+        {0x1C, 0x1C, 0x00, 0xFF, 1}, /* PHASE08H */   
+        {0x1D, 0x1D, 0x00, 0xFF, 1}, /* PHASE09H */   
+        {0x1E, 0x1E, 0x00, 0xFF, 1}, /* PHASE10H */   
+        {0x1F, 0x1F, 0x00, 0xFF, 1}, /* PHASE11H */   
+        {0x20, 0x20, 0x00, 0xFF, 1}, /* PHASE12H */
+        {0x21, 0x21, 0x00, 0xFF, 1}, /* PHASE13H */
+        {0x22, 0x22, 0x00, 0xFF, 1}, /* PHASE14H */
+        {0x23, 0x23, 0x00, 0xFF, 1}, /* PHASE15H */
+        {0x24, 0x24, 0x00, 0xFF, 1}, /* PHASE16H */
+        {0x25, 0x25, 0x00, 0xFF, 1}, /* PHASE04_01L */
+        {0x26, 0x26, 0x00, 0xFF, 1}, /* PHASE08_05L */
+        {0x27, 0x27, 0x00, 0xFF, 1}, /* PHASE12_09L */
+        {0x28, 0x28, 0x00, 0xFF, 1}, /* PHASE16_13L */
+        {0x29, 0x29, 0x00, 0xFF, 1}, /* WIDTH01H */
+        {0x2A, 0x2A, 0x00, 0xFF, 1}, /* WIDTH02H */
+        {0x2B, 0x2B, 0x00, 0xFF, 1}, /* WIDTH03H */
+        {0x2C, 0x2C, 0x00, 0xFF, 1}, /* WIDTH04H */
+        {0x2D, 0x2D, 0x00, 0xFF, 1}, /* WIDTH05H */
+        {0x2E, 0x2E, 0x00, 0xFF, 1}, /* WIDTH06H */
+        {0x2F, 0x2F, 0x00, 0xFF, 1}, /* WIDTH07H */
+        {0x30, 0x30, 0x00, 0xFF, 1}, /* WIDTH08H */
+        {0x31, 0x31, 0x00, 0xFF, 1}, /* WIDTH09H */
+        {0x32, 0x32, 0x00, 0xFF, 1}, /* WIDTH10H */
+        {0x33, 0x33, 0x00, 0xFF, 1}, /* WIDTH11H */
+        {0x34, 0x34, 0x00, 0xFF, 1}, /* WIDTH12H */
+        {0x35, 0x35, 0x00, 0xFF, 1}, /* WIDTH13H */
+        {0x36, 0x36, 0x00, 0xFF, 1}, /* WIDTH14H */
+        {0x37, 0x37, 0x00, 0xFF, 1}, /* WIDTH15H */
+        {0x38, 0x38, 0x00, 0xFF, 1}, /* WIDTH16H */
+        {0x39, 0x39, 0x00, 0xFF, 1}, /* WIDTH04_01L */
+        {0x3A, 0x3A, 0x00, 0xFF, 1}, /* WIDTH08_05L */
+        {0x3B, 0x3B, 0x00, 0xFF, 1}, /* WIDTH12_09L */
+        {0x3C, 0x3C, 0x00, 0xFF, 1}, /* WIDTH16_13L */
+        {0x3D, 0x3D, 0x00, 0xFF, 1}, /* BANK_PHASE01L */
+        {0x3E, 0x3E, 0x00, 0xFF, 1}, /* BANK_PHASE02L */
+        {0x3F, 0x3F, 0x00, 0xFF, 1}, /* BANK_PHASE03L */
+        {0x40, 0x40, 0x00, 0xFF, 1}, /* BANK_PHASE04L */
+        {0x41, 0x41, 0x00, 0xFF, 1}, /* BANK_PHASE04_01H */
+        {0x42, 0x42, 0x00, 0xFF, 1}, /* BANK_PHASE05L */
+        {0x43, 0x43, 0x00, 0xFF, 1}, /* BANK_PHASE06L */
+        {0x44, 0x44, 0x00, 0xFF, 1}, /* BANK_PHASE07L */
+        {0x45, 0x45, 0x00, 0xFF, 1}, /* BANK_PHASE08L */
+        {0x46, 0x46, 0x00, 0xFF, 1}, /* BANK_PHASE08_05H */
+        {0x47, 0x47, 0x00, 0xFF, 1}, /* BANK_PHASE09L */
+        {0x48, 0x48, 0x00, 0xFF, 1}, /* BANK_PHASE10L */
+        {0x49, 0x49, 0x00, 0xFF, 1}, /* BANK_PHASE11L */
+        {0x4A, 0x4A, 0x00, 0xFF, 1}, /* BANK_PHASE12L */
+        {0x4B, 0x4B, 0x00, 0xFF, 1}, /* BANK_PHASE12_09H */
+        {0x4C, 0x4C, 0x00, 0xFF, 1}, /* BANK_PHASE13L */
+        {0x4D, 0x4D, 0x00, 0xFF, 1}, /* BANK_PHASE14L */
+        {0x4E, 0x4E, 0x00, 0xFF, 1}, /* BANK_PHASE15L */
+        {0x4F, 0x4F, 0x00, 0xFF, 1}, /* BANK_PHASE16L */
+        {0x50, 0x50, 0x00, 0xFF, 1}, /* BANK_PHASE16_13H */
+        {0x51, 0x51, 0x00, 0xFF, 1}, /* BANK_WIDTH01L */
+        {0x52, 0x52, 0x00, 0xFF, 1}, /* BANK_WIDTH02L */
+        {0x53, 0x53, 0x00, 0xFF, 1}, /* BANK_WIDTH03L */
+        {0x54, 0x54, 0x00, 0xFF, 1}, /* BANK_WIDTH04L */
+        {0x55, 0x55, 0x00, 0xFF, 1}, /* BANK_WIDTH04_01H */
+        {0x56, 0x56, 0x00, 0xFF, 1}, /* BANK_WIDTH05L */
+        {0x57, 0x57, 0x00, 0xFF, 1}, /* BANK_WIDTH06L */
+        {0x58, 0x58, 0x00, 0xFF, 1}, /* BANK_WIDTH07L */
+        {0x59, 0x59, 0x00, 0xFF, 1}, /* BANK_WIDTH08L */
+        {0x5A, 0x5A, 0x00, 0xFF, 1}, /* BANK_WIDTH08_05H */
+        {0x5B, 0x5B, 0x00, 0xFF, 1}, /* BANK_WIDTH09L */
+        {0x5C, 0x5C, 0x00, 0xFF, 1}, /* BANK_WIDTH10L */
+        {0x5D, 0x5D, 0x00, 0xFF, 1}, /* BANK_WIDTH11L */
+        {0x5E, 0x5E, 0x00, 0xFF, 1}, /* BANK_WIDTH12L */
+        {0x5F, 0x5F, 0x00, 0xFF, 1}, /* BANK_WIDTH12_09H */
+        {0x60, 0x60, 0x00, 0xFF, 1}, /* BANK_WIDTH13L */
+        {0x61, 0x61, 0x00, 0xFF, 1}, /* BANK_WIDTH14L */
+        {0x62, 0x62, 0x00, 0xFF, 1}, /* BANK_WIDTH15L */
+        {0x63, 0x63, 0x00, 0xFF, 1}, /* BANK_WIDTH16L */
+        {0x64, 0x64, 0x00, 0xFF, 1}, /* BANK_WIDTH16_13H */
+        {0x65, 0x70, 0x00, 0xFF, 1}, /* LEDONTH01 */
+        {0x66, 0x71, 0x01, 0xFF, 1}, /* LEDONTH02 */
+        {0x67, 0x72, 0x01, 0xFF, 1}, /* LEDONTH03 */
+        {0x68, 0x73, 0x01, 0xFF, 1}, /* LEDONTH04 */
+        {0x69, 0x74, 0x01, 0xFF, 1}, /* LEDONTH05 */
+        {0x6A, 0x75, 0x01, 0xFF, 1}, /* LEDONTH06 */
+        {0x6B, 0x76, 0x01, 0xFF, 1}, /* LEDONTH07 */
+        {0x6C, 0x77, 0x01, 0xFF, 1}, /* LEDONTH08 */
+        {0x6D, 0x78, 0x01, 0xFF, 1}, /* LEDONTH09 */
+        {0x6E, 0x79, 0x01, 0xFF, 1}, /* LEDONTH10 */
+        {0x6F, 0x7A, 0x01, 0xFF, 1}, /* LEDONTH11 */
+		{0x70, 0x7B, 0x01, 0xFF, 1}, /* LEDONTH12 */
+        {0x71, 0x7C, 0x01, 0xFF, 1}, /* LEDONTH13 */
+        {0x72, 0x7D, 0x01, 0xFF, 1}, /* LEDONTH14 */
+        {0x73, 0x7E, 0x01, 0xFF, 1}, /* LEDONTH15 */
+		{0x74, 0x7F, 0x01, 0xFF, 1}, /* LEDONTH16 */     
+        {0x75, 0x80, 0x00, 0xFF, 1}, /* SYSCFG */
+        {0x76, 0x81, 0x05, 0x05, 1}, /* CMWTAP */
+        {0x77, 0x82, 0x0C, 0xFF, 1}, /* PWMTICK */
+        {0x78, 0x83, 0x00, 0x03, 1}, /* ADCID */
+        {0x79, 0x84, 0x00, 0x03, 1}, /* CLK_SYNC */
+        {0x7A, 0x85, 0x00, 0xFF, 1}, /* STATUS */
+        {0x7B, 0x86, 0x00, 0xFF, 1}, /* FLT_OPEN_OR_DRVL */
+        {0x7C, 0x87, 0x00, 0xFF, 1}, /* FLT_OPEN_OR_DRVH */
+        {0x7D, 0x88, 0x00, 0xFF, 1}, /* FAULT_SHORTL */
+		{0x7E, 0x89, 0x00, 0xFF, 1}, /* FAULT_SHORTH */
+		{0x7F, 0x8A, 0x00, 0xFF, 1}, /* FAULT_RESFETL */
+		{0x80, 0x8B, 0x00, 0xFF, 1}, /* FAULT_RESFETH */    
+        {0x81, 0x8C, 0x00, 0xFF, 2}, /* CERRCNT */	
+        {0x82, 0x8D, 0x00, 0xFF, 2}, /* ADC1 */
+        {0x83, 0x8E, 0x00, 0xFF, 2}, /* ADC2 */
+        {0x84, 0x8F, 0x00, 0xFF, 2}, /* DIETEMP */
+        {0x85, 0x90, 0x00, 0xFF, 2}, /* CS */
+        {0x86, 0x91, 0x00, 0xFF, 2}, /* VLEDON01 */
+        {0x87, 0x92, 0x00, 0xFF, 2}, /* VLEDON02 */
+        {0x88, 0x93, 0x00, 0xFF, 2}, /* VLEDON03 */
+        {0x89, 0x94, 0x00, 0xFF, 2}, /* VLEDON04 */
+        {0x8A, 0x95, 0x00, 0xFF, 2}, /* VLEDON05 */
+        {0x8B, 0x96, 0x00, 0xFF, 2}, /* VLEDON06 */
+        {0x8C, 0x97, 0x00, 0xFF, 2}, /* VLEDON07 */
+        {0x8D, 0x98, 0x00, 0xFF, 2}, /* VLEDON08 */
+        {0x8E, 0x99, 0x00, 0xFF, 2}, /* VLEDON09 */
+        {0x90, 0x9A, 0x00, 0xFF, 2}, /* VLEDON10 */
+        {0x91, 0x9B, 0x00, 0xFF, 2}, /* VLEDON11 */
+        {0x92, 0x9C, 0x00, 0xFF, 2}, /* VLEDON12 */
+        {0x93, 0x9D, 0x00, 0xFF, 2}, /* VLEDON13 */
+        {0x94, 0x9E, 0x00, 0xFF, 2}, /* VLEDON14 */
+		{0x95, 0x9F, 0x00, 0xFF, 2}, /* VLEDON15 */
+        {0x96, 0xA0, 0x00, 0xFF, 2}, /* VLEDON16 */
+		{0x97, 0xA1, 0x00, 0xFF, 2}, /* VLEDOFF01 */
+        {0x98, 0xA2, 0x00, 0xFF, 2}, /* VLEDOFF02 */
+        {0x99, 0xA3, 0x00, 0xFF, 2}, /* VLEDOFF03 */
+        {0x9A, 0xA4, 0x00, 0xFF, 2}, /* VLEDOFF04 */
+        {0x9B, 0xA5, 0x00, 0xFF, 2}, /* VLEDOFF05 */
+        {0x9C, 0xA6, 0x00, 0xFF, 2}, /* VLEDOFF06 */
+        {0x9D, 0xA7, 0x00, 0xFF, 2}, /* VLEDOFF07 */
+        {0x9E, 0xA8, 0x00, 0xFF, 2}, /* VLEDOFF08 */
+        {0x9F, 0xA9, 0x00, 0xFF, 2}, /* VLEDOFF09 */
+        {0xA0, 0xAA, 0x00, 0xFF, 2}, /* VLEDOFF10 */
+        {0xA1, 0xAB, 0x00, 0xFF, 2}, /* VLEDOFF11 */
+        {0xA2, 0xAC, 0x00, 0xFF, 2}, /* VLEDOFF12 */
+        {0xA3, 0xAD, 0x00, 0xFF, 2}, /* VLEDOFF13 */
+        {0xA4, 0xAE, 0x00, 0xFF, 2}, /* VLEDOFF14 */
+		{0xA5, 0xAF, 0x00, 0xFF, 2}, /* VLEDOFF15 */
+        {0xA6, 0xB0, 0x00, 0xFF, 2}, /* VLEDOFF16 */	
+        {0xA7, 0xB1, 0x00, 0xFF, 2}, /* PWM_MISCOUNTL */
+        {0xA8, 0xB2, 0x00, 0xFF, 2}, /* PWM_MISCOUNTH */
+        {0xA9, 0xF7, 0x00, 0xFF, 2}, /* LOTINFO1 */
+		{0xAA, 0xF8, 0x00, 0xFF, 2}, /* LOTINFO2 */
+		{0xAB, 0xF9, 0x00, 0xFF, 2}, /* LOTINFO3 */
+		{0xAC, 0xFA, 0x00, 0xFF, 2}, /* LOTINFO4 */
+		{0xAD, 0xFB, 0x00, 0xFF, 2}, /* MTP_PROG1 */
+		{0xAE, 0xFC, 0x00, 0xFF, 2}, /* MTP_PROG2 */
+		{0xAF, 0xFD, 0x00, 0xFF, 2}, /* MTP_PROG3 */
+		{0xB0, 0xFE, 0x00, 0xFF, 2}, /* MTP_PROG4 */
+        {0xB1, 0xFF, 0x00, 0xFF, 2}, /* TPS_ICID */
+    };
+
+
+
+
+
+void led2_thread()
+{
+    while (true) {
+        led2 = !led2;
+        ThisThread::sleep_for(1s);
+    }
+}
+
+void LMMStatus(void)
+{
+    while (true) {
+        printf("LMMStatus\n");
+        //printf("TPS92664 ADC1 : %d\n", my_tps92664_device.regs[TPS_ADC1].value);
+
+        int ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[TPS_ADC1], 2);
+        if (ret < 0)
+        {
+
+          //  printf("devid blank\r\n");
+            TPS92664_communicationReset();
+    
+            tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN && CMWEN
+            TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+            my_tps92664_device.useACK = true;
+        }
+        else
+        {
+            printf("TPS92664 ADC1 : %d\n", tps92664_regs[TPS_ADC1].value);
+            printf("TPS92664 ADC2 : %d\n", my_tps92664_device.regs[TPS_ADC2].value);
+        }
+
+
+
+        ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[TPS_ICID], 1);
+        if (ret < 0)
+        {
+
+          //  printf("devid blank\r\n");
+            TPS92664_communicationReset();
+    
+            tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN && CMWEN
+            TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+            my_tps92664_device.useACK = true;
+        }
+        else
+        {
+         
+            printf("TPS92664 TPS ICID : %d\n", my_tps92664_device.regs[TPS_ICID].value);
+        }
+
+        ret = TPS92664_Get_ADC(LMM1_handler, ADC_CH1);
+        printf("TPS92664 TPS ADC1 : %d\n", ret);
+
+        ret = TPS92664_SingleDeviceRead(LMM1_handler, &tps92664_regs[TPS_STATUS],1);
+        if (ret < 0)
+        {
+
+        }
+        else
+        {
+            printf("my_tps92664_device %d TPS92664 TPS_STATUS : %d\n",my_tps92664_device.device_id , my_tps92664_device.regs[TPS_STATUS].value);
+        }
+
+        ret = TPS92664_SingleDeviceRead(LMM1_handler, &tps92664_regs[TPS_SYSCFG],1);
+        if (ret < 0)
+        {
+
+        }
+        else
+        {
+            printf("my_tps92664_device %d TPS92664 TPS_SYSCFG : %d\n",my_tps92664_device.device_id , my_tps92664_device.regs[TPS_SYSCFG].value);
+        }
+
+        ret = TPS92664_SingleDeviceRead(LMM1_handler, &tps92664_regs[TPS_CMWTAP],1);
+        if (ret < 0)
+        {
+
+        }
+        else
+        {
+            printf("my_tps92664_device %d TPS92664 TPS_CMWTAP : %d\n",my_tps92664_device.device_id , my_tps92664_device.regs[TPS_CMWTAP].value);
+        }
+
+         ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[WIDTH01H], 1);
+        if (ret < 0)
+        {
+
+        }
+        else
+        {
+            printf("TPS92664 WIDTH01H : %d\n", my_tps92664_device.regs[WIDTH01H].value);
+        }
+        ThisThread::sleep_for(800ms);
+    }
+
+}
+
+
+void taskPrintData()
+{
+    mutex.lock();
+
+    while (1) {
+        // Wait for a condition to change
+        cond.wait();
+        int response, ret;
+        int raw_data = 0;
+        // Now it is safe to access data in this thread
+        printf("Data received: %s\r\n", data);
+        if(strncmp(data,"W",1)== 0) {
+        
+            int address = 16*hex2int(data[2])+hex2int(data[3]);
+            int data2 = 16*hex2int(data[5])+hex2int(data[6]);
+
+            
+            printf("Writing register: Address: %d\r\n", address);
+            printf("Writing register: Data: %d\r\n", data2);
+            ret = LedDriver.writeRegs(address, data2, &response);
+            if(ret < 0) printf("Error Code A: %d\r\n", ret);
+            printf("Writen Data: %d\r\n", response & 0x00FF);
+        }
+        else if(strncmp(data,"R",1)== 0) {
+            
+            int address = 16*hex2int(data[2])+hex2int(data[3]);
+
+            printf("Reading register: Address: %d\r\n", address);
+            ret = LedDriver.readRegs(address, &raw_data);
+            if(ret < 0) printf("Error Code A: %d\r\n", ret);
+
+            printf("Register data: %d\r\n", raw_data & 0x00FF);
+        }
+        else if(strncmp(data,"reset",5) == 0) {
+            ret = LedDriver.reset();
+            printf("Reseting device\r\n");
+            if(ret < 0) printf("Error Code: %d\r\n", ret); 
+        }
+        else if(strncmp(data,"stat",4) == 0) {
+            printf("%s", LedDriver.status()); 
+        }
+        else if(strncmp(data,"temp",4) == 0) {
+            printf("%s", LedDriver.temp()); 
+        }
+        else if(strncmp(data,"current",7) == 0) {
+            int channel = hex2int(data[8]);
+            printf("Channel: %d\r\n", channel);
+            int len = strlen(data);
+            int current = 0;
+            int count=1;
+            while(len > 10) {
+                current += count*hex2int(data[len-1]);
+                count = count*10;
+                len--; 
+            }
+            printf("Current: %d mA\r\n", current);
+            printf("%s", LedDriver.setCurrent(channel, current)); 
+        }
+        else if(strncmp(data,"pwm",3) == 0) {
+            int channel = hex2int(data[4]);
+            printf("Channel: %d\r\n", channel);
+            int len = strlen(data);
+            int duty = 0;
+            int count=1;
+            while(len > 6) {
+                duty += count*hex2int(data[len-1]);
+                count = count*10;
+                len--; 
+            }
+            printf("Duty: %d %\r\n", duty);
+            printf("%s", LedDriver.setPWMDuty(channel, duty)); 
+        }
+        else if(strncmp(data,"freq",4) == 0) {
+            int channel = hex2int(data[5]);
+            //printf("Channel: %d\r\n", channel);
+            int len = strlen(data);
+            int freq = 0;
+            int count=1;
+            while(len > 7) {
+                freq += count*hex2int(data[len-1]);
+                count = count*10;
+                len--; 
+            }
+            printf("Fr: %d mA\r\n", freq);
+            printf("%s", LedDriver.setFreq(channel, freq)); 
+        }
+        else if(strncmp(data,"div",3) == 0) {
+            int value = hex2int(data[4]);
+            printf("%s", LedDriver.setPWMClkDiv(value)); 
+        }
+        else if(strncmp(data,"TPS92662",8) == 0) {
+            int value = data[9];
+            if (value == 43) {
+                blank_time = blank_time+1;}
+            if (value == 45) {
+                blank_time = blank_time-1;}
+            
+            printf("LMM blank_time:%d\r\n", blank_time);
+        }        
+        else {
+            printf("Invalid Command\r\n");
+            printmenu();
+        }
+
+        memset(data, 0, DATA_LEN);  // empty data to make space for new data
+    }
+}
+
+void onSerialReceived(void)
+{
+    while (serial.readable()) {
+        // Read serial
+        recvLen = serial.read(recvBuff, BUFF_LEN);
+
+        if ((strlen(message) + recvLen) > MSG_LEN) {
+            // too much data -> something went wrong
+            memset(message, 0, MSG_LEN);
+            break;
+        }
+
+        strcat(message, recvBuff);          // append received chars to message
+
+       
+        if (message[strlen(message) - 1] == '\r') {
+            // message complete
+            mutex.lock();
+
+            // copy the chars from the message to the data storage
+           // strcat(data, &message[1]);      // omit first char (which is 's')
+           // data[strlen(data) - 1] = '\0';  // delete last char (which is '#')
+            memset(message, 0, MSG_LEN);
+
+            // Signal for other threads that data has been received
+            cond.notify_all();
+            mutex.unlock();
+            break;
+        }
+    }
+    memset(recvBuff, 0, BUFF_LEN);
+}
+
+void onSigio(void)
+{
+    eventQueue.call(onSerialReceived);
+}
+
+int main()
+{
+    int response, ret;
+    printf("Starting..\r\n");
+
+    // Enable Led Channels
+    CH1_PWM = 0;
+    CH2_PWM = 0;
+    
+    
+    LedDriver.init();
+    LedDriver.reset();
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.status());
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setFreq(1,380));
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setFreq(2,380));
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setCurrent(1, STOP_TURN_CURRENT));
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setCurrent(2, STOP_TURN_CURRENT));
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setPWMClkDiv(2));
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setPWMDuty(1, 100));
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.setPWMDuty(2, 100));
+    ThisThread::sleep_for(10ms);
+    LedDriver.writeRegs(00, 0x0F, &response);
+    ThisThread::sleep_for(10ms);
+    printf("%s", LedDriver.status());
+
+
+   // thread1.set_priority(osPriorityLow);
+    //thread2.set_priority(osPriorityBelowNormal);
+    //thread3.set_priority(osPriorityNormal);
+    //thread4.set_priority(osPriorityLow);
+
+    thread1.start(taskPrintData);
+    thread2.start(callback(&eventQueue, &EventQueue::dispatch_forever));
+    //thread3.start(LMMStatus);
+    thread4.start(led2_thread);
+    
+
+
+    preg = tps92664_regs;
+    p_my_leds = my_leds;
+
+    ret = TPS92664_init(LMM1_handler, (tps92664_st_reg *)&tps92664_regs);
+    if (ret < 0)
+    {
+        /* TPS92664 initialization failed, check the value of ret! */
+       // printf("TPS92664 Init Fail\n");
+    }
+    else
+    {
+        /* TPS92664 initialization OK */
+      //  printf("TPS92664 Init OK\n");
+    } 
+
+    my_tps92664_device.regs = tps92664_regs;
+    
+    TPS92664_communicationReset();
+    
+    //printf("Find TPS92664 Device\n");
+
+    tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN
+    TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+    my_tps92664_device.useACK = true;
+
+
+    for(int x=0; x<64; x++)
+    {
+        int a = x;
+        //printf("TPS92664 device ID : %d\r\n", a);
+        bool dev_id0 = a & 0x01;
+        //printf("dev_id0: %d\r\n", dev_id0);
+        bool dev_id1 = (a & 0x02) >> 1;
+        //printf("dev_id1: %d\r\n", dev_id1);
+        bool dev_id2 = (a & 0x04) >> 2;
+        // printf("dev_id2: %d\r\n", dev_id2);
+        bool dev_id3 = (a & 0x08) >> 3;
+        // printf("dev_id3: %d\r\n", dev_id3);
+        bool dev_id4 = (a & 0x10) >> 4;
+        // printf("dev_id4: %d\r\n", dev_id4);
+        bool dev_id5 = (a & 0x20) >> 5;
+        // printf("dev_id5: %d\r\n", dev_id5);
+        
+        bool p0 = dev_id0^dev_id1^dev_id2^dev_id4;
+
+        bool p1 = !(dev_id1^dev_id3^dev_id4^dev_id5);
+
+        uint8_t devid = a +(p1<<7)+(p0<<6);
+         
+        my_tps92664_device.device_id = devid;
+        //printf("TPS92664 device DEVID Byte : %d\r\n", my_tps92664_device.device_id);
+        ret = TPS92664_SingleDeviceRead(LMM1_handler, &LMM1_handler->regs[TPS_SYSCFG], 1);
+        if (ret < 0)
+        {
+
+          //  printf("devid blank\r\n");
+            TPS92664_communicationReset();
+    
+            tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN && CMWEN
+            TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+            my_tps92664_device.useACK = true;
+        }
+        else
+        {
+         //   printf("TPS92664 TPS_SYSCFG Reg Value: %u\n", my_tps92664_device.regs[TPS_SYSCFG].value);
+            printf("TPS92664 device address : %d\n", my_tps92664_device.device_id);
+        }
+        
+
+    }
+
+    
+
+    my_tps92664_device.device_id = 236;
+    printf("TPS92664 device address : %d\n", my_tps92664_device.device_id);
+    tps92664_regs[TPS_SYSCFG].value = int(0b00100000);           //Broadcast set ACKEN && CMWEN
+    TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+    my_tps92664_device.useACK = true;
+
+    ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[TPS_PWMTICK], 1);
+    if (ret < 0)
+    {
+
+    }
+    else
+    {
+        printf("TPS92664 TPS_PWMTICK : %d\n", my_tps92664_device.regs[TPS_PWMTICK].value);
+    }
+    
+    ThisThread::sleep_for(10ms);
+
+    tps92664_regs[TPS_PWMTICK].value = 168;           
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_PWMTICK],1);  
+
+    ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[TPS_PWMTICK], 1);
+    if (ret < 0)
+    {
+
+    }
+    else
+    {
+        printf("TPS92664 TPS_PWMTICK : %d\n", my_tps92664_device.regs[TPS_PWMTICK].value);
+    }
+
+
+    ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[WIDTH01H], 1);
+    if (ret < 0)
+    {
+
+    }
+    else
+    {
+        printf("TPS92664 WIDTH01H : %d\n", my_tps92664_device.regs[WIDTH01H].value);
+    }
+    
+    ThisThread::sleep_for(10ms);
+
+    printf("my_tps92664_device TPS92664 WIDTH01H : %d\n", my_tps92664_device.regs[WIDTH01H].value);
+
+    tps92664_regs[WIDTH01H].value = 85;           
+    tps92664_regs[WIDTH02H].value = 35;
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[WIDTH01H],2);  
+
+    ThisThread::sleep_for(1ms);
+
+    ret = TPS92664_SingleDeviceWriteRegs(LMM1_handler, &tps92664_regs[WIDTH01H],2);
+    if (ret < 0)
+    {
+
+    }
+    else
+    {
+        printf("my_tps92664_device TPS92664 WIDTH01H : %d\n", my_tps92664_device.regs[WIDTH01H].value);
+    }
+
+    ret = TPS92664_SingleDeviceRead(LMM1_handler, &preg[WIDTH01H], 1);
+    if (ret < 0)
+    {
+
+    }
+    else
+    {
+        printf("TPS92664 WIDTH01H : %d\n", my_tps92664_device.regs[WIDTH01H].value);
+    }
+
+    printf("TPS92664_Calculate_Phase_Width\n");
+    TPS92664_Calculate_Phase_Width(p_my_leds, LEDsDuty, blank_time);
+
+    printf("TPS92664_SetLeds\n");
+    ret = TPS92664_BroadcastSetLeds(LMM1_handler, p_my_leds, 16);
+
+    if (ret < 0)
+    {
+        printf("TPS92664_BroadcastSetLeds FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_BroadcastSetLeds OK\n");
+    }
+
+
+    tps92664_regs[DEFWIDTH01].value = 0x00;
+    tps92664_regs[DEFWIDTH02].value = 0xFF;
+    tps92664_regs[DEFWIDTH03].value = 0xFF;
+    tps92664_regs[DEFWIDTH04].value = 0xFF;
+    tps92664_regs[DEFWIDTH05].value = 0xFF;
+    tps92664_regs[DEFWIDTH06].value = 0xFF;
+    tps92664_regs[DEFWIDTH07].value = 0xFF;
+    tps92664_regs[DEFWIDTH08].value = 0xFF;
+    tps92664_regs[DEFWIDTH09].value = 0xFF;
+    tps92664_regs[DEFWIDTH10].value = 0xFF;
+    tps92664_regs[DEFWIDTH11].value = 0xFF;
+    tps92664_regs[DEFWIDTH12].value = 0xFF;
+    tps92664_regs[DEFWIDTH13].value = 0xFF;
+    tps92664_regs[DEFWIDTH14].value = 0xFF;
+    tps92664_regs[DEFWIDTH15].value = 0xFF;
+    tps92664_regs[DEFWIDTH16].value = 0x00;
+
+
+    printf("TPS Set default width registers\n");
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[DEFWIDTH01],16);  
+
+    if (ret < 0)
+    {
+        printf("TPS92664_BroadcastWriteRegs FAIL\n");
+    }
+    else
+    {
+        printf("TPS92664_BroadcastWriteRegs OK\n");
+    }
+
+    printf("Setup CMWTAB Watchdog\n");
+    tps92664_regs[TPS_CMWTAP].value = 7;           
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_CMWTAP],1);   
+    if (ret < 0)
+    {
+        printf("Setup CMWTABFAIL\n");
+    }
+    else
+    {
+        printf("Setup CMWTAB OK\n");
+    }
+
+
+
+    printf("Enable Watchdog\n");
+    tps92664_regs[TPS_SYSCFG].value = int(0b00101000);           //Broadcast set ACKEN && CMWEN
+    ret = TPS92664_BroadcastWriteRegs(&tps92664_regs[TPS_SYSCFG],1);   
+    if (ret < 0)
+    {
+        printf("Watchdog FAIL\n");
+    }
+    else
+    {
+        printf("Watchdog OK\n");
+    }
+
+    serial.sigio(callback(onSigio));
+
+    while (1) {
+        
+        ThisThread::sleep_for(10ms);
+
+    }
+}
+
+int hex2int(char ch)
+{
+    if (ch >= '0' && ch <= '9')
+        return ch - '0';
+    if (ch >= 'A' && ch <= 'F')
+        return ch - 'A' + 10;
+    if (ch >= 'a' && ch <= 'f')
+        return ch - 'a' + 10;
+    return -1;
+}
+
+// Read a line from the large rx buffer from rx interrupt routine
+void read_line() {
+    int i=0;
+    int raw_data = 0;
+
+    int response, ret;
+    // Loop reading rx buffer characters until end of line character
+    while ((i==0) || (serial_rx_line[i-1] != '\r')) {
+        // Wait if buffer empty
+        if (serial_rx_in == serial_rx_out) {
+            return;
+        }
+        serial_rx_line[i] = serial_rx_buffer[serial_rx_out];
+        i++;
+        serial_rx_out = (serial_rx_out + 1) % buffer_size;
+    }
+    serial_rx_line[i-1] = 0;
+    if(strncmp(serial_rx_line,"W",1)== 0) {
+        
+        int address = 16*hex2int(serial_rx_line[2])+hex2int(serial_rx_line[3]);
+        int data = 16*hex2int(serial_rx_line[5])+hex2int(serial_rx_line[6]);
+        
+        printf("Writing register: Address: %d\r\n", address);
+        printf("Writing register: Data: %d\r\n", data);
+        ret = LedDriver.writeRegs(address, data, &response);
+        if(ret < 0) printf("Error Code A: %d\r\n", ret);
+        printf("Writen Data: %d\r\n", response & 0x00FF);
+    }
+    else if(strncmp(serial_rx_line,"R",1)== 0) {
+        
+        int address = 16*hex2int(serial_rx_line[2])+hex2int(serial_rx_line[3]);
+        
+        printf("Reading register: Address: %d\r\n", address);
+        ret = LedDriver.readRegs(address, &raw_data);
+        if(ret < 0) printf("Error Code A: %d\r\n", ret);
+
+        printf("Register data: %d\r\n", raw_data & 0x00FF);
+    }
+    else if(strncmp(serial_rx_line,"reset",5) == 0) {
+        ret = LedDriver.reset();
+        printf("Reseting device\r\n");
+        if(ret < 0) printf("Error Code: %d\r\n", ret); }
+    else if(strncmp(serial_rx_line,"stat",4) == 0) {
+        printf("%s", LedDriver.status()); }
+    else if(strncmp(serial_rx_line,"temp",4) == 0) {
+        printf("%s", LedDriver.temp()); }
+    else if(strncmp(serial_rx_line,"current",7) == 0) {
+        int channel = hex2int(serial_rx_line[8]);
+        printf("Channel: %d\r\n", channel);
+        int len = strlen(serial_rx_line);
+        int current = 0;
+        int count=1;
+        while(len > 10) {
+            current += count*hex2int(serial_rx_line[len-1]);
+            count = count*10;
+            len--; 
+            }
+        printf("Current: %d mA\r\n", current);
+        printf("%s", LedDriver.setCurrent(channel, current)); }
+    else if(strncmp(serial_rx_line,"pwm",3) == 0) {
+        int channel = hex2int(serial_rx_line[4]);
+        printf("Channel: %d\r\n", channel);
+        int len = strlen(serial_rx_line);
+        int duty = 0;
+        int count=1;
+        while(len > 6) {
+            duty += count*hex2int(serial_rx_line[len-1]);
+            count = count*10;
+            len--; 
+            }
+        printf("Duty: %d %\r\n", duty);
+        printf("%s", LedDriver.setPWMDuty(channel, duty)); }
+    else if(strncmp(serial_rx_line,"freq",4) == 0) {
+        int channel = hex2int(serial_rx_line[5]);
+        //printf("Channel: %d\r\n", channel);
+        int len = strlen(serial_rx_line);
+        int freq = 0;
+        int count=1;
+        while(len > 7) {
+            freq += count*hex2int(serial_rx_line[len-1]);
+            count = count*10;
+            len--; 
+            }
+        //printf("Fr: %d mA\r\n", freq);
+        printf("%s", LedDriver.setFreq(channel, freq)); }
+    else if(strncmp(serial_rx_line,"div",3) == 0) {
+        int value = hex2int(serial_rx_line[4]);
+        printf("%s", LedDriver.setPWMClkDiv(value)); }
+    else if(strncmp(serial_rx_line,"TPS92662",8) == 0) {
+        int value = serial_rx_line[9];
+        if (value == 43) {
+            blank_time = blank_time+1;}
+        if (value == 45) {
+            blank_time = blank_time-1;}
+        
+        printf("LMM blank_time:%d\r\n", blank_time); }        
+    else {
+        printf("Invalid Command\r\n");
+        printmenu();
+    }
+    
+    return;
+}
+
+void printmenu(void){
+    printf("Available Commands:\n\r");
+    printf("R [hex address]              - Read Register\n\r");
+    printf("W [hex address]              - Write Register\n\r");
+    printf("temp                         - Junction temperature\n\r");
+    printf("status                       - Device status\n\r");
+    printf("reset                        - Reset device\n\r");
+    printf("current [channel] [mA]       - Set output current\n\r");
+    printf("pwm [channel] [percentage]   - Set duty of the output current\n\r");
+    printf("freq [channel] [kHz]         - Set switching frequency\n\r");
+    printf("div [reg value]              - Set PWM Clk Divider\n\r");
+    printf("TPS92662 [+/-]     - Setup LMM TPS92662blank time\n\r");
+}
